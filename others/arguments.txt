@@ -1,0 +1,12 @@
+# tourist 학습
+
+--trainset dstc5_train \
+--testset dstc5_dev \
+--dataroot /hdd/data/dstc5/data \
+--modelfile slu.baseline.tourist.model \
+--outfile slu.baseline.tourist.json \
+--roletype tourist
+
+--trainset dstc5_train --testset dstc5_dev --dataroot /hdd/data/dstc5/data --modelfile slu.baseline.tourist.model --outfile slu.baseline.tourist.json --roletype tourist
+
+
