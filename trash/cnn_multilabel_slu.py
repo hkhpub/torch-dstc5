@@ -17,6 +17,12 @@ from slu_model import SluConvNet
 np.random.seed(0)
 torch.manual_seed(0)
 
+"""
+실험노트
+2018년 2월 13일
+Multi-label Multi-hot 벡터를 [1, 0], [0, 0] 형태로 변환하여 즉, 출력 노드의 갯수를 2배로 늘려 실험함
+결과: 너무 많은 화행을 출력함 - precision이 (0.02) 낮고 recall이 높음 (0.94) - 전체적으로 실패
+"""
 def main(argv):
     parser = argparse.ArgumentParser(description='CNN baseline for DSTC5 SAP Task')
     parser.add_argument('--trainset', dest='trainset', action='store', metavar='TRAINSET', required=True, help='')
@@ -97,11 +103,14 @@ def main(argv):
     train_labels = label_binarizer.transform(sa_train_labels)
     test_labels = label_binarizer.transform(sa_test_labels)
 
+    # convert multi-hot vector to [1, 0], [0, 0] binary vector form
+    train_bin_labels = convert_binary_labels(train_labels)
+
     # split and shuffle data
     indices = np.arange(train_inputs.shape[0])
     np.random.shuffle(indices)
     train_inputs = train_inputs[indices]
-    train_labels = train_labels[indices]
+    train_bin_labels = train_bin_labels[indices]
     num_validation = int(validation_split * train_inputs.shape[0])
 
     # x_train = train_inputs[:-num_validation]
@@ -109,20 +118,20 @@ def main(argv):
     # x_val = train_inputs[-num_validation:]
     # y_val = train_labels[-num_validation:]
     x_train = train_inputs
-    y_train = train_labels
+    y_train = train_bin_labels
 
     x_test = test_inputs
-    y_test = test_labels
+    y_test_numpy = test_labels
 
     # construct a pytorch data_loader
     x_train = torch.from_numpy(x_train).long()
-    y_train = torch.from_numpy(y_train).float()
+    y_train = torch.from_numpy(y_train).long()
     dataset_tensor = data_utils.TensorDataset(x_train, y_train)
     train_loader = data_utils.DataLoader(dataset_tensor, batch_size=batch_size, shuffle=True, num_workers=4,
                                          pin_memory=False)
 
     x_test = torch.from_numpy(x_test).long()
-    y_test = torch.from_numpy(y_test).long()
+    y_test = torch.from_numpy(y_test_numpy).long()
     dataset_tensor = data_utils.TensorDataset(x_test, y_test)
     test_loader = data_utils.DataLoader(dataset_tensor, batch_size=batch_size, shuffle=False, num_workers=4,
                                          pin_memory=False)
@@ -140,8 +149,7 @@ def main(argv):
     learning_rate = float(params['learning_rate'])
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    loss_fn = nn.BCEWithLogitsLoss()
-    # loss_fn = nn.MultiLabelSoftMarginLoss()
+    loss_fn = nn.MultiLabelMarginLoss()
 
     for epoch in range(num_epochs):
         model.train()   # set the model to training mode (apply dropout etc)
@@ -165,11 +173,11 @@ def main(argv):
 
         model.eval()        # set the model to evaluation mode
 
-        true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test, multilabel)
+        true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test_numpy)
         print("Precision: %.4f\tRecall: %.4f\tF1-score: %.4f\n" % (metrics[0], metrics[1], metrics[2]))
 
     # end of training
-    true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test, multilabel)
+    true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test_numpy)
     print("Precision: %.4f\tRecall: %.4f\tF1-score: %.4f\n" % (metrics[0], metrics[1], metrics[2]))
 
     with open(("pred_result_%s.txt" % args.roletype), "w") as f:
@@ -178,7 +186,7 @@ def main(argv):
 
 # end of main
 
-def evaluate(model, label_binarizer, test_loader, y_test, multilabel=False):
+def evaluate(model, label_binarizer, test_loader, y_test_numpy):
     preds = None
     for i, (x_batch, _) in enumerate(test_loader):
         inputs = autograd.Variable(x_batch)
@@ -192,13 +200,10 @@ def evaluate(model, label_binarizer, test_loader, y_test, multilabel=False):
         else:
             preds = np.concatenate((preds, preds_batch), axis=0)    # merge along batch axis
 
-    if multilabel:
-        pred_labels = predict_multilabel(preds)
-    else:
-        pred_labels = predict_onelabel(preds)      # multiclass
+    pred_labels = convert_multihot_labels(preds)
 
     pred_acts = label_binarizer.inverse_transform(pred_labels)
-    true_acts = label_binarizer.inverse_transform(y_test)
+    true_acts = label_binarizer.inverse_transform(y_test_numpy)
 
     # calculate F1-measure
     pred_cnt = pred_correct_cnt = answer_cnt = 0
@@ -206,6 +211,11 @@ def evaluate(model, label_binarizer, test_loader, y_test, multilabel=False):
         pred_cnt += len(pred_act)
         answer_cnt += len(true_act)
         pred_correct_cnt += len([act for act in pred_act if act in true_act])
+
+    if pred_cnt == 0:
+        pred_cnt = len(pred_acts)
+    if  pred_correct_cnt == 0:
+        pred_correct_cnt = 0.001
 
     P = pred_correct_cnt * 1.0 / pred_cnt
     R = pred_correct_cnt * 1.0 / answer_cnt
@@ -222,21 +232,27 @@ def predict_onelabel(preds):
 
     return pred_labels
 
-def predict_multilabel(preds):
-    threshold = 0.2
-    pred_labels = np.zeros(preds.shape)
-    for i, pred in enumerate(preds):
-        vec = np.array([1 if p > threshold else 0 for p in pred])
-        pred_labels[i] = vec
+def convert_binary_labels(labels):
+    double_labels = np.zeros((labels.shape[0], labels.shape[1] * 2), dtype=int)
+    for i, label in enumerate(labels):
+        for j, value in enumerate(label):
+            if value == 1:
+                double_labels[i][2*j] = 1
+                double_labels[i][2*j+1] = 0
+            else:
+                double_labels[i][2*j] = 0
+                double_labels[i][2*j+1] = 0
+    return double_labels
 
-    return pred_labels
+def convert_multihot_labels(bin_labels):
+    multihot_labels = np.zeros((bin_labels.shape[0], bin_labels.shape[1] / 2), dtype=int)
+    for i in range(bin_labels.shape[0]):
+        for j in range(0, bin_labels.shape[1], 2):
+            if bin_labels[i][j] > bin_labels[i][j+1]:
+                # [1, 0]
+                multihot_labels[i][j/2] = 1
 
-def predict_sigmoid(preds):
-    pred_labels = np.zeros(preds.shape)
-    for i, label_index in enumerate(preds):
-        pred_labels[i][label_index] = 1
-
-    return pred_labels
+    return multihot_labels
 
 if __name__ == "__main__":
     main(sys.argv)

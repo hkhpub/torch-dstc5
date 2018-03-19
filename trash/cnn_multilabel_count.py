@@ -17,6 +17,12 @@ from slu_model import SluConvNet
 np.random.seed(0)
 torch.manual_seed(0)
 
+"""
+실험노트
+2018년 2월 13일
+test set의 화행 개수가 주어졌다고 가정할 때 softmax top-k를 취하여 multi-label 분류함 (upper bound로 볼 수 있음)
+결과: multi-class 예측보다 더 낮은 f-measure, 전체적으로 실패!
+"""
 def main(argv):
     parser = argparse.ArgumentParser(description='CNN baseline for DSTC5 SAP Task')
     parser.add_argument('--trainset', dest='trainset', action='store', metavar='TRAINSET', required=True, help='')
@@ -112,7 +118,7 @@ def main(argv):
     y_train = train_labels
 
     x_test = test_inputs
-    y_test = test_labels
+    y_test_numpy = test_labels
 
     # construct a pytorch data_loader
     x_train = torch.from_numpy(x_train).long()
@@ -122,7 +128,7 @@ def main(argv):
                                          pin_memory=False)
 
     x_test = torch.from_numpy(x_test).long()
-    y_test = torch.from_numpy(y_test).long()
+    y_test = torch.from_numpy(y_test_numpy).long()
     dataset_tensor = data_utils.TensorDataset(x_test, y_test)
     test_loader = data_utils.DataLoader(dataset_tensor, batch_size=batch_size, shuffle=False, num_workers=4,
                                          pin_memory=False)
@@ -140,8 +146,8 @@ def main(argv):
     learning_rate = float(params['learning_rate'])
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    loss_fn = nn.BCEWithLogitsLoss()
-    # loss_fn = nn.MultiLabelSoftMarginLoss()
+    # loss_fn = nn.BCEWithLogitsLoss()
+    loss_fn = nn.MultiLabelSoftMarginLoss()
 
     for epoch in range(num_epochs):
         model.train()   # set the model to training mode (apply dropout etc)
@@ -165,11 +171,11 @@ def main(argv):
 
         model.eval()        # set the model to evaluation mode
 
-        true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test, multilabel)
+        true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test_numpy)
         print("Precision: %.4f\tRecall: %.4f\tF1-score: %.4f\n" % (metrics[0], metrics[1], metrics[2]))
 
     # end of training
-    true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test, multilabel)
+    true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test_numpy)
     print("Precision: %.4f\tRecall: %.4f\tF1-score: %.4f\n" % (metrics[0], metrics[1], metrics[2]))
 
     with open(("pred_result_%s.txt" % args.roletype), "w") as f:
@@ -178,7 +184,7 @@ def main(argv):
 
 # end of main
 
-def evaluate(model, label_binarizer, test_loader, y_test, multilabel=False):
+def evaluate(model, label_binarizer, test_loader, y_test_numpy):
     preds = None
     for i, (x_batch, _) in enumerate(test_loader):
         inputs = autograd.Variable(x_batch)
@@ -192,13 +198,10 @@ def evaluate(model, label_binarizer, test_loader, y_test, multilabel=False):
         else:
             preds = np.concatenate((preds, preds_batch), axis=0)    # merge along batch axis
 
-    if multilabel:
-        pred_labels = predict_multilabel(preds)
-    else:
-        pred_labels = predict_onelabel(preds)      # multiclass
+    pred_labels = predict_multilabel(preds, y_test_numpy)
 
     pred_acts = label_binarizer.inverse_transform(pred_labels)
-    true_acts = label_binarizer.inverse_transform(y_test)
+    true_acts = label_binarizer.inverse_transform(y_test_numpy)
 
     # calculate F1-measure
     pred_cnt = pred_correct_cnt = answer_cnt = 0
@@ -214,20 +217,14 @@ def evaluate(model, label_binarizer, test_loader, y_test, multilabel=False):
 
     return true_acts, pred_acts, metrics
 
-def predict_onelabel(preds):
+def predict_multilabel(preds, y_test_numpy):
     pred_labels = np.zeros(preds.shape)
-    preds = np.argmax(preds, axis=1)
-    for i, label_index in enumerate(preds):
-        pred_labels[i][label_index] = 1
-
-    return pred_labels
-
-def predict_multilabel(preds):
-    threshold = 0.2
-    pred_labels = np.zeros(preds.shape)
-    for i, pred in enumerate(preds):
-        vec = np.array([1 if p > threshold else 0 for p in pred])
-        pred_labels[i] = vec
+    sa_lens = [len([v for v in y if v == 1]) for y in y_test_numpy]
+    # sa_lens = np.ones(y_test_numpy.shape[0])
+    for i, (pred, sa_len) in enumerate(zip(preds, sa_lens)):
+        topk_idxs = pred.argsort()[-sa_len:][::-1]  # top-k argument
+        # topk_idxs = pred.argsort()[-1:][::-1]  # top-k argument
+        pred_labels[i][topk_idxs] = 1
 
     return pred_labels
 

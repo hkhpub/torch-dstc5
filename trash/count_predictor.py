@@ -89,13 +89,16 @@ def main(argv):
     test_inputs = data_helpers.build_input_data(test_pad_sents, vocabulary)
 
     # build labels
-    sa_train_labels = [utter[2] for utter in train_utters]
-    sa_test_labels = [utter[2] for utter in test_utters]
-    label_binarizer = preprocessing.MultiLabelBinarizer()
-    label_binarizer.fit(sa_train_labels+sa_test_labels)
+    train_labels = [len(utter[2]) for utter in train_utters]
+    test_labels = [len(utter[2]) for utter in test_utters]
+    major_percentage = len([p for p in test_labels if p == 1])*100.0 / len(test_labels)
+    print("majority percentage: %.2f%%" % major_percentage)
 
-    train_labels = label_binarizer.transform(sa_train_labels)
-    test_labels = label_binarizer.transform(sa_test_labels)
+    label_binarizer = preprocessing.LabelBinarizer()
+    label_binarizer.fit(train_labels+test_labels)
+
+    train_labels = label_binarizer.transform(train_labels)
+    test_labels = label_binarizer.transform(test_labels)
 
     # split and shuffle data
     indices = np.arange(train_inputs.shape[0])
@@ -141,7 +144,6 @@ def main(argv):
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     loss_fn = nn.BCEWithLogitsLoss()
-    # loss_fn = nn.MultiLabelSoftMarginLoss()
 
     for epoch in range(num_epochs):
         model.train()   # set the model to training mode (apply dropout etc)
@@ -165,20 +167,19 @@ def main(argv):
 
         model.eval()        # set the model to evaluation mode
 
-        true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test, multilabel)
-        print("Precision: %.4f\tRecall: %.4f\tF1-score: %.4f\n" % (metrics[0], metrics[1], metrics[2]))
+        true_acts, pred_acts, accuracy = evaluate(model, label_binarizer, test_loader, y_test.numpy())
+        print(', '.join(['%s'%p for p in pred_acts]))
+        predicted_major_percentage = len([p for p in pred_acts if p == 1]) * 100.0 / len(pred_acts)
+        print("predicted majority percentage: %.2f%%" % predicted_major_percentage)     # 99.49%
+        print("Accuracy: %.4f\n" % accuracy)
 
     # end of training
-    true_acts, pred_acts, metrics = evaluate(model, label_binarizer, test_loader, y_test, multilabel)
-    print("Precision: %.4f\tRecall: %.4f\tF1-score: %.4f\n" % (metrics[0], metrics[1], metrics[2]))
-
-    with open(("pred_result_%s.txt" % args.roletype), "w") as f:
-        for pred_act, true_act in zip(pred_acts, true_acts):
-            f.write("pred: %s\ntrue: %s\n\n" % (', '.join(pred_act), ', '.join(true_act)))
+    true_acts, pred_acts, accuracy = evaluate(model, label_binarizer, test_loader, y_test.numpy())
+    print("Accuracy: %.4f\n" % accuracy)
 
 # end of main
 
-def evaluate(model, label_binarizer, test_loader, y_test, multilabel=False):
+def evaluate(model, label_binarizer, test_loader, y_test):
     preds = None
     for i, (x_batch, _) in enumerate(test_loader):
         inputs = autograd.Variable(x_batch)
@@ -192,27 +193,14 @@ def evaluate(model, label_binarizer, test_loader, y_test, multilabel=False):
         else:
             preds = np.concatenate((preds, preds_batch), axis=0)    # merge along batch axis
 
-    if multilabel:
-        pred_labels = predict_multilabel(preds)
-    else:
-        pred_labels = predict_onelabel(preds)      # multiclass
-
+    pred_labels = np.zeros(y_test.shape)
+    for i, argmax in enumerate(preds.argmax(axis=1)):
+        pred_labels[i][argmax] = 1
     pred_acts = label_binarizer.inverse_transform(pred_labels)
     true_acts = label_binarizer.inverse_transform(y_test)
 
-    # calculate F1-measure
-    pred_cnt = pred_correct_cnt = answer_cnt = 0
-    for pred_act, true_act in zip(pred_acts, true_acts):
-        pred_cnt += len(pred_act)
-        answer_cnt += len(true_act)
-        pred_correct_cnt += len([act for act in pred_act if act in true_act])
-
-    P = pred_correct_cnt * 1.0 / pred_cnt
-    R = pred_correct_cnt * 1.0 / answer_cnt
-    F = 2*P*R / (P+R)
-    metrics = (P, R, F)
-
-    return true_acts, pred_acts, metrics
+    accuracy = sum(pred_acts == true_acts) * 1.0 / len(pred_acts)
+    return true_acts, pred_acts, accuracy
 
 def predict_onelabel(preds):
     pred_labels = np.zeros(preds.shape)
@@ -228,13 +216,6 @@ def predict_multilabel(preds):
     for i, pred in enumerate(preds):
         vec = np.array([1 if p > threshold else 0 for p in pred])
         pred_labels[i] = vec
-
-    return pred_labels
-
-def predict_sigmoid(preds):
-    pred_labels = np.zeros(preds.shape)
-    for i, label_index in enumerate(preds):
-        pred_labels[i][label_index] = 1
 
     return pred_labels
 

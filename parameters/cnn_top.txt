@@ -1,13 +1,13 @@
-num_epochs: 20
+num_epochs: 10
 validation_split: 0.1
 dropout: 0.5
 batch_size: 32
 max_sent_len: 100
 embedding: rand
 embedding_dim: 100
-num_filters: 50
+num_filters: 20
 filter_sizes: [1, 2, 3]
 learning_rate: 0.001
-context_length: 5
+context_length: 3
 hidden_dim: 100
-multilabel: false
+multilabel: true
